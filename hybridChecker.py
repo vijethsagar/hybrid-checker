@@ -3,12 +3,36 @@ import requests
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 
-st.set_page_config(layout="wide")
-st.title("📊 StarTree Time Boundary Inspector")
+# Set page layout
+st.set_page_config(layout="wide", page_title="StarTree Time Boundary Inspector", page_icon="📊")
+st.markdown("""
+    <style>
+        .stTextInput > div > div > input {
+            background-color: #f7f9fa;
+            border-radius: 8px;
+            padding: 10px;
+        }
+        .stSelectbox > div > div > div {
+            background-color: #f7f9fa;
+            border-radius: 8px;
+        }
+        .stButton button {
+            background-color: #4CAF50;
+            color: white;
+            font-weight: bold;
+            padding: 10px 20px;
+            border-radius: 8px;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-# Inputs
-broker_url = st.text_input("Pinot Broker URL", placeholder="e.g., https://broker.pinot.xxxxxx.cp.s7e.startree.cloud")
-bearer_token = st.text_input("Bearer Token", type="password")
+st.title("📊 StarTree Time Boundary Inspector")
+st.caption("Visually analyze REALTIME vs OFFLINE data boundaries for Pinot hybrid tables")
+
+# Sidebar Inputs
+st.sidebar.header("🔧 Configuration")
+broker_url = st.sidebar.text_input("Pinot Broker URL", placeholder="e.g., https://broker.pinot.xxxxxx.cp.s7e.startree.cloud")
+bearer_token = st.sidebar.text_input("Bearer Token", type="password")
 
 # Fetch table list as soon as broker URL and token are available
 table_list = []
@@ -18,12 +42,12 @@ headers = {}
 if broker_url and bearer_token:
     headers = {"Authorization": f"Bearer {bearer_token}"}
     try:
-        table_list_url = f"{broker_url.replace("://broker.", "://", 1).rstrip('/')}/tables"
+        table_list_url = f"{broker_url.replace('://broker.', '://', 1).rstrip('/')}/tables"
         response = requests.get(table_list_url, headers=headers)
         if response.status_code == 200:
             table_list = response.json().get("tables", [])
             if table_list:
-                table_name = st.selectbox("Select Table", sorted(table_list))
+                table_name = st.selectbox("📂 Select Table", sorted(table_list))
         else:
             st.error("Failed to fetch table list.")
     except Exception as e:
@@ -37,29 +61,32 @@ def epoch_to_datetime_str(epoch_ms):
     except:
         return "Invalid timestamp"
 
-# Button only triggers time boundary fetch
-if table_name and st.button("Get Time Boundaries"):
+# Fetch and visualize when button clicked
+if table_name and st.button("Analyze Time Boundaries"):
     try:
         headers["Content-Type"] = "application/json"
 
-        # Time boundary API
         boundary_url = f"{broker_url.rstrip('/')}/debug/timeBoundary/{table_name}"
         boundary_response = requests.get(boundary_url, headers=headers)
 
         if boundary_response.status_code != 200:
             st.error(f"Failed to get time boundary: {boundary_response.status_code}")
             if boundary_response.status_code == 404:
-                st.error("Please pick a Hybrid table")
+                st.warning("⚠️ Please pick a Hybrid table")
         else:
             boundary_json = boundary_response.json()
             time_column = boundary_json.get("timeColumn")
             time_value = boundary_json.get("timeValue")
 
-            st.subheader("🔍 Time Boundary from /debug")
-            st.markdown(f"Time Column:`{time_column}`")
-            st.markdown(f"Time Boundary: `{epoch_to_datetime_str(time_value)}`")
+            st.markdown("---")
+            st.subheader("🔍 Time Boundary")
+            st.markdown(f"""
+            <div style='background-color:#eef8f2;padding:1em;border-radius:10px'>
+                <strong>⏱ Time Column:</strong> `{time_column}`<br>
+                <strong>📌 Boundary Value:</strong> `{epoch_to_datetime_str(time_value)}`
+            </div>
+            """, unsafe_allow_html=True)
 
-            # SQL queries
             query_url = f"{broker_url.rstrip('/')}/query/sql"
             def run_query(sql): return requests.post(query_url, headers=headers, json={"sql": sql})
 
@@ -71,15 +98,15 @@ if table_name and st.button("Get Time Boundaries"):
             }
 
             resp = {k: run_query(q) for k, q in queries.items()}
+
             st.subheader("📊 Component Table Stats")
 
             if resp["min_rt"].status_code == 200 and resp["max_off"].status_code == 200:
-                min_rt = float(resp["min_rt"].json()["resultTable"]["rows"][0][0])
-                max_off = float(resp["max_off"].json()["resultTable"]["rows"][0][0])
-
-                if max_off < min_rt:
+                min_rt_val = float(resp["min_rt"].json()["resultTable"]["rows"][0][0])
+                max_off_val = float(resp["max_off"].json()["resultTable"]["rows"][0][0])
+                if max_off_val < min_rt_val:
                     st.markdown("⚠️ Data loss detected: Max of OFFLINE is less than Min of REALTIME")
-                if min_rt > float(time_value):
+                if min_rt_val > float(time_value):
                     st.markdown("⚠️ Data loss detected: Min of REALTIME is greater than Time Boundary")
             else:
                 st.markdown("❌ Could not load dates for validation")
@@ -100,32 +127,30 @@ if table_name and st.button("Get Time Boundaries"):
             if min_time_off: st.markdown(f"MIN ({time_column}): `{epoch_to_datetime_str(min_time_off)}`")
             if max_time: st.markdown(f"MAX ({time_column}): `{epoch_to_datetime_str(max_time)}`")
 
-            # Timeline visualization
+            # Visualization continues here...
             if min_time and realtimemax_time and max_time and min_time_off and time_value:
                 try:
                     dt_min = datetime.fromtimestamp(min_time / 1000.0)
                     dt_rt_max = datetime.fromtimestamp(realtimemax_time / 1000.0)
-                    # dt_off_min = datetime.fromtimestamp(min_time_off / 1000.0)
                     dt_off_max = datetime.fromtimestamp(max_time / 1000.0)
                     dt_boundary = datetime.fromtimestamp(float(time_value) / 1000.0)
-                    # Compute a corrected offline min if needed (restores old buffer logic)
                     difference = (realtimemax_time - min_time) / 1000
                     buffer = datetime.fromtimestamp(max_time / 1000.0 - difference)
                     dt_off_min_raw = datetime.fromtimestamp(min_time_off / 1000.0)
                     dt_off_min = max(buffer, dt_off_min_raw)
 
+                    st.markdown("---")
+                    st.subheader("📈 Timeline Visualization")
                     fig, ax = plt.subplots(figsize=(12, 3))
-                    ax.set_title("⏱ Time Range Visualization")
+                    ax.set_title("Time Range Overview")
                     ax.set_xlabel("Time")
                     ax.set_yticks([0, 1])
                     ax.set_yticklabels(["OFFLINE", "REALTIME"])
 
-                    # Bars and time boundary
                     ax.hlines(y=1, xmin=dt_min, xmax=dt_rt_max, color='limegreen', linewidth=12, label='REALTIME Range')
                     ax.hlines(y=0, xmin=dt_off_min, xmax=dt_off_max, color='indianred', linewidth=12, label='OFFLINE Range')
                     ax.axvline(dt_boundary, color='gold', linestyle='--', linewidth=2, label='Time Boundary')
 
-                    # Dotted daily grid lines
                     current_date = dt_min.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
                     while current_date < max(dt_rt_max, dt_off_max):
                         ax.axvline(current_date, color='gray', linestyle=':', linewidth=1)
