@@ -1,4 +1,6 @@
 # hybrid-checker
 
 
-Run with streamlit run hybridchecker.py       
+Run with:
+
+streamlit run hybridChecker.py     
